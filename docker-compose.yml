@@ -1,0 +1,191 @@
+# version: '3.8'
+
+services:
+  # --------------------------------------------------
+  # DATABASE TARGET (POSTGRESQL - SILVER LAYER)
+  # --------------------------------------------------
+  postgres:
+    image: postgres:15
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-db_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-db_password}
+      POSTGRES_DB: ${POSTGRES_DB:-silver_db}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-db_user} -d ${POSTGRES_DB:-silver_db}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - etl_network
+
+  # --------------------------------------------------
+  # BRONZE LAYER STORAGE (MINIO - MOUNTED BINARY)
+  # --------------------------------------------------
+  minio:
+    image: ubuntu:22.04
+    container_name: minio_storage
+    restart: always
+    ports:
+      - '9002:9000'
+      - '9001:9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+      - ./bin/minio:/usr/local/bin/minio:ro
+    command: minio server /data --console-address ":9001"
+    networks:
+      - etl_network
+
+  # Otomatisasi Pembuatan Bucket Bronze di MinIO
+  createbuckets:
+    image: ubuntu:22.04
+    container_name: minio_create_bucket
+    depends_on:
+      - minio
+    volumes:
+      - ./bin/mc:/usr/local/bin/mc:ro
+    command: >
+      bash -c "
+      until mc alias set myminio http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin}; do echo 'Waiting for MinIO...'; sleep 2; done;
+      mc mb myminio/${MINIO_BUCKET_NAME:-bronze-bucket} --ignore-existing;
+      mc anonymous set public myminio/${MINIO_BUCKET_NAME:-bronze-bucket};
+      exit 0;
+      "
+    networks:
+      - etl_network
+
+  # --------------------------------------------------
+  # STREAMING & MESSAGE BROKER (ZOOKEEPER & KAFKA)
+  # --------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    restart: always
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - '2181:2181'
+    networks:
+      - etl_network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    restart: always
+    depends_on:
+      - zookeeper
+    ports:
+      - '9092:9092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - etl_network
+
+  # --------------------------------------------------
+  # ORCHESTRATOR (APACHE AIRFLOW)
+  # --------------------------------------------------
+  airflow:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: airflow
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      minio:
+        condition: service_started
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-db_user}:${POSTGRES_PASSWORD:-db_password}@postgres:5432/${POSTGRES_DB:-silver_db}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - _PIP_ADDITIONAL_REQUIREMENTS=kafka-python requests urllib3 boto3 minio dbt-postgres dbt-bigquery pyarrow pandas
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+      - ./dbt_project:/opt/airflow/dbt_project
+      - ./config:/opt/airflow/config
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - '8080:8080'
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin || true
+        airflow scheduler &
+        exec airflow webserver
+    networks:
+      - etl_network
+
+  # --------------------------------------------------
+  # PROCESSING ENGINE (APACHE SPARK)
+  # --------------------------------------------------
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: spark-master
+    hostname: spark-master
+    restart: always
+    ports:
+      - '8081:8080'
+      - '7077:7077'
+    volumes:
+      - ./scripts:/opt/spark/scripts
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    networks:
+      - etl_network
+
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: spark-worker
+    restart: always
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+    volumes:
+      - ./scripts:/opt/spark/scripts
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    networks:
+      - etl_network
+
+  # --------------------------------------------------
+  # OPERATIONAL MONITORING (GRAFANA)
+  # --------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: grafana_dashboard
+    restart: always
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - etl_network
+
+volumes:
+  postgres_data:
+  minio_data:
+  grafana_data:
+
+networks:
+  etl_network:
+    driver: bridge

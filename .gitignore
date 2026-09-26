@@ -1,0 +1,32 @@
+# Environment & Secret Files
+.env
+*.json
+*.pem
+
+# Python Caches & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Airflow Logs & Temp Files
+logs/
+plugins/
+airflow.cfg
+*.pid
+
+# dbt Artifacts & Logs
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+
+# IDE & OS Files
+.DS_Store
+.vscode/
+.idea/
+
+bin/
+*.tar.gz
+go/

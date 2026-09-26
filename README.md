@@ -78,33 +78,76 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 
 ---
 
-## 🚀 Quickstart Guide (Local Execution)
+## 🚀 Quickstart Guide
 
-Follow these steps to run the complete pipeline on your local machine using Docker without needing a GCP account.
+Follow these steps to set up and run the pipeline on your environment.
 
-### Prerequisites
-* Docker Desktop & Docker Compose installed
-* Git
+### ⚙️ Special Setup: Native MinIO Compilation (For VM / GCP Rate-Limit Workarounds)
 
-### 1. Clone the Repository
+If running on a cloud VM (GCP/AWS) where Docker Hub registry rate limits or corrupt image pulls occur, compile the official `minio` and `mc` binaries natively using Go toolchain before running Docker Compose:
+
+#### 1. Clean Environment & Install Go Toolchain
+```bash
+# Delete corrupt or existing local bin folder
+rm -rf ./bin
+
+# Download & install Go 1.22
+wget [https://go.dev/dl/go1.22.5.linux-amd64.tar.gz](https://go.dev/dl/go1.22.5.linux-amd64.tar.gz)
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+```
+
+#### 2. Build MinIO & MC Binary from Official GitHub Source
+```bash
+go install [github.com/minio/minio@latest](https://github.com/minio/minio@latest)
+go install [github.com/minio/mc@latest](https://github.com/minio/mc@latest)
+```
+*(Compilation process takes ~30–60 seconds)*
+
+#### 3. Move Compiled Binaries to Project Directory
+```bash
+mkdir -p ./bin
+cp ~/go/bin/minio ./bin/minio
+cp ~/go/bin/mc ./bin/mc
+chmod +x ./bin/minio ./bin/mc
+```
+
+#### 4. Verify Binary Versions
+```bash
+./bin/minio --version
+```
+*Expected Output:* `minio version DEVELOPMENT...` or `minio version RELEASE...`
+
+---
+
+### 🐳 Execution Steps
+
+#### 1. Clone the Repository
 ```bash
 git clone [https://github.com/your-username/nyc-taxi-medallion-pipeline.git](https://github.com/your-username/nyc-taxi-medallion-pipeline.git)
 cd nyc-taxi-medallion-pipeline
 ```
 
-### 2. Configure Environment Variables
+#### 2. Configure Environment Variables
 Copy the example environment file and adjust if needed:
 ```bash
 cp .env.example .env
 ```
 
-### 3. Spin Up Infrastructure
-Start all services (Airflow, Postgres, MinIO, Grafana):
+#### 3. Spin Up Docker Pipeline
 ```bash
-docker-compose up -d
+docker compose down
+docker compose up -d
 ```
 
-### 4. Access Web UIs
+#### 4. Verify MinIO Service Health
+```bash
+docker ps --filter "name=minio"
+curl -I http://localhost:9001
+```
+*Expected Output:* `HTTP/1.1 200 OK`
+
+#### 5. Access Web Interfaces
 * **Apache Airflow:** `http://localhost:8080` (User: `admin` | Pass: `admin`)
 * **MinIO Console (S3/GCS Emulation):** `http://localhost:9001` (User: `minioadmin` | Pass: `minioadmin`)
 * **Grafana Dashboards:** `http://localhost:3000` (User: `admin` | Pass: `admin`)
