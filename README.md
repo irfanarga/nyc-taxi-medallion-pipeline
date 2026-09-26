@@ -52,6 +52,7 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 ## ✨ Key Features & Engineering Highlights
 
 * **Decoupled Storage & Compute:** Ingestion scripts process data in-memory (`io.BytesIO`) before pushing to Cloud/Object Storage, eliminating local VM disk bottlenecks.
+* **Automated Time-Window Ingestion:** Dynamically fetches NYC Yellow Taxi data from **January 2025 to the latest available month**, with graceful fallback handling for unreleased monthly partitions (HTTP 404).
 * **Medallion Architecture:**
   * 🟤 **Bronze Layer:** Raw, immutable Parquet files preserved for compliance and reprocessing.
   * ⚪ **Silver Layer:** Cleaned, deduplicated, and validated data with derived features (e.g., trip duration, fare per mile).
@@ -69,9 +70,9 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 | Domain | Technology |
 | :--- | :--- |
 | **Orchestration** | Apache Airflow |
-| **Ingestion & Processing** | Python, Pandas / PySpark |
+| **Ingestion & Processing** | Python, Pandas, PyArrow |
 | **Cloud Infrastructure (GCP)** | Compute Engine (VM), Google Cloud Storage (GCS), BigQuery |
-| **Local Infrastructure (Docker)** | MinIO (Object Storage), PostgreSQL, DuckDB |
+| **Local Infrastructure (Docker)** | MinIO (Object Storage), PostgreSQL, DuckDB, Apache Kafka |
 | **Data Transformation** | dbt Core (`dbt-bigquery` / `dbt-postgres`) |
 | **Monitoring & BI** | Looker Studio, Grafana |
 | **Containerization** | Docker & Docker Compose |
@@ -79,8 +80,6 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 ---
 
 ## 🚀 Quickstart Guide
-
-Follow these steps to set up and run the pipeline on your environment.
 
 ### ⚙️ Special Setup: Native MinIO Compilation (For VM / GCP Rate-Limit Workarounds)
 
@@ -102,7 +101,6 @@ export PATH=$PATH:/usr/local/go/bin
 go install [github.com/minio/minio@latest](https://github.com/minio/minio@latest)
 go install [github.com/minio/mc@latest](https://github.com/minio/mc@latest)
 ```
-*(Compilation process takes ~30–60 seconds)*
 
 #### 3. Move Compiled Binaries to Project Directory
 ```bash
@@ -116,41 +114,33 @@ chmod +x ./bin/minio ./bin/mc
 ```bash
 ./bin/minio --version
 ```
-*Expected Output:* `minio version DEVELOPMENT...` or `minio version RELEASE...`
 
 ---
 
 ### 🐳 Execution Steps
 
-#### 1. Clone the Repository
+#### 1. Clone the Repository & Configure Environment
 ```bash
 git clone [https://github.com/your-username/nyc-taxi-medallion-pipeline.git](https://github.com/your-username/nyc-taxi-medallion-pipeline.git)
 cd nyc-taxi-medallion-pipeline
-```
-
-#### 2. Configure Environment Variables
-Copy the example environment file and adjust if needed:
-```bash
 cp .env.example .env
 ```
 
-#### 3. Spin Up Docker Pipeline
+#### 2. Spin Up Docker Pipeline Infrastructure
 ```bash
+# Set permissions for Airflow DAGs & Scripts
+chmod -R 777 dags/ scripts/
+
+# Start all containers
 docker compose down
 docker compose up -d
 ```
 
-#### 4. Verify MinIO Service Health
-```bash
-docker ps --filter "name=minio"
-curl -I http://localhost:9001
-```
-*Expected Output:* `HTTP/1.1 200 OK`
-
-#### 5. Access Web Interfaces
-* **Apache Airflow:** `http://localhost:8080` (User: `admin` | Pass: `admin`)
-* **MinIO Console (S3/GCS Emulation):** `http://localhost:9001` (User: `minioadmin` | Pass: `minioadmin`)
-* **Grafana Dashboards:** `http://localhost:3000` (User: `admin` | Pass: `admin`)
+#### 3. Trigger Bronze Ingestion via Airflow UI
+1. Open Apache Airflow UI at `http://<YOUR-VM-IP>:8080` (Default Credentials: `admin` / `admin`).
+2. Locate the DAG **`nyc_taxi_bronze_ingestion`**.
+3. Toggle the DAG switch to **ON**, then click **Trigger DAG (▶)**.
+4. Monitor execution logs in real-time as raw Parquet files are streamed directly into **MinIO** (`s3://bronze-bucket/raw/`) or **GCS** (`gs://<your-bucket>/raw/`).
 
 ---
 
