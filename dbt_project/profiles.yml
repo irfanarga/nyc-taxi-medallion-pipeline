@@ -1,0 +1,12 @@
+nyc_taxi_profile:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: postgres
+      user: db_user
+      password: db_password
+      port: 5432
+      dbname: silver_db
+      schema: gold
+      threads: 4
