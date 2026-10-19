@@ -1,7 +1,7 @@
 version: 2
 
 sources:
-  - name: silver_layer
-    schema: public
+  - name: silver_source
+    schema: "{{ 'silver_dataset' if target.name == 'gcp' else 'public' }}"
     tables:
       - name: silver_yellow_taxi

@@ -2,7 +2,11 @@ WITH staging AS (
     SELECT * FROM {{ ref('stg_silver_yellow_taxi') }}
 )
 SELECT
-    DATE_TRUNC('month', pickup_datetime)::DATE AS trip_month,
+    {% if target.name == 'gcp' %}
+        DATE_TRUNC(CAST(pickup_datetime AS DATE), MONTH) AS trip_month,
+    {% else %}
+        DATE_TRUNC('month', pickup_datetime)::DATE AS trip_month,
+    {% endif %}
     pickup_location_id,
     dropoff_location_id,
     payment_type_id,

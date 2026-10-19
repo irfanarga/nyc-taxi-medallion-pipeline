@@ -1,12 +1,23 @@
 nyc_taxi_profile:
-  target: dev
+  target: "{{ env_var('ENVIRONMENT', 'LOCAL') | lower }}"
   outputs:
-    dev:
+    local:
       type: postgres
-      host: postgres
-      user: db_user
-      password: db_password
+      host: "{{ env_var('POSTGRES_HOST', 'postgres') }}"
+      user: "{{ env_var('POSTGRES_USER', 'db_user') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD', 'db_password') }}"
       port: 5432
-      dbname: silver_db
+      dbname: "{{ env_var('POSTGRES_DB', 'silver_db') }}"
       schema: gold
       threads: 4
+
+    gcp:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: gold
+      location: asia-southeast1  # ⚠️ Sesuaikan dengan region dataset BigQuery Anda (misal: US atau us-central1)
+      keyfile: /opt/airflow/config/gcp_key.json
+      threads: 4
+      timeout_seconds: 300
+      priority: interactive
