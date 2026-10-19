@@ -8,7 +8,7 @@
 
 An enterprise-grade, scalable **End-to-End Data Engineering Pipeline** built using the **Medallion Architecture (Bronze ➔ Silver ➔ Gold)**. 
 
-This project processes millions of NYC TLC Taxi Trip records, demonstrating both **Batch Processing** and **Stream-Ready Infrastructure**. It is uniquely engineered with a **Dual-Deployment Strategy**, allowing it to run seamlessly on **Google Cloud Platform (GCP)** or **100% locally using Docker** (zero cloud cost).
+This project processes millions of NYC TLC Taxi Trip records (from **January 2025 to the present**), demonstrating both **Batch Processing** and **Stream-Ready Infrastructure**. It is uniquely engineered with a **Dual-Deployment Strategy**, allowing it to run seamlessly on **Google Cloud Platform (GCP)** or **100% locally using Docker** (zero cloud cost) via a single environment switch.
 
 ---
 
@@ -34,17 +34,18 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 │  • Raw Parquet files stored directly in-memory         │  │  • Local Parquet storage emulation                     │
 │                                                        │  │                                                        │
 │  [SILVER LAYER]                                        │  │  [SILVER LAYER]                                        │
-│  PostgreSQL / BigQuery Staging                         │  │  PostgreSQL Container (`silver_db`)                    │
+│  BigQuery Staging (`silver_dataset`)                   │  │  PostgreSQL Container (`silver_db`)                    │
 │  • Deduplication, schema validation, data cleansing    │  │  • Data cleansing, filtering, type casting             │
-│  • Fast bulk COPY FROM STDIN optimization              │  │  • Incremental metadata tracking (`silver_processed`)  │
+│  • Native Python BigQuery Load Jobs                    │  │  • Fast bulk COPY FROM STDIN optimization              │
+│                                                        │  │  • Incremental metadata tracking (`silver_processed`)  │
 │                                                        │  │                                                        │
 │  [GOLD LAYER]                                          │  │  [GOLD LAYER]                                          │
-│  BigQuery Data Mart (dbt Core)                         │  │  DuckDB / PostgreSQL (dbt Core)                        │
-│  • Star Schema (Fact & Dimension Tables)               │  │  • Local analytical data mart (`gold` schema)          │
+│  BigQuery Data Mart (`gold` schema)                    │  │  PostgreSQL Data Mart (`gold` schema)                  │
+│  • Star Schema (Fact & Dimension Tables via dbt)       │  │  • Star Schema built using dbt-postgres                │
 │  • Partitioned & Clustered for cost optimization       │  │                                                        │
 │                                                        │  │                                                        │
 │  [PRESENTATION LAYER]                                  │  │  [PRESENTATION LAYER]                                  │
-│  Looker Studio (Business BI)                           │  │  Grafana Dashboard (Operational & Real-time)           │
+│  Looker Studio (Executive & Business BI)               │  │  Grafana Dashboard (Operational & System Health)       │
 └────────────────────────────────────────────────────────┘  └────────────────────────────────────────────────────────┘
 ```
 
@@ -52,21 +53,21 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 
 ## ✨ Key Features & Engineering Highlights
 
-- **Decoupled Storage & Compute:** Ingestion scripts process data in-memory (`io.BytesIO`) before pushing to Cloud/Object Storage, eliminating local VM disk bottlenecks.
-- **Automated Time-Window Ingestion:** Dynamically fetches NYC Yellow Taxi data from **January 2025 to the latest available month**, with graceful fallback handling for unreleased monthly partitions (HTTP 404).
+- **Decoupled Storage & Compute:** Ingestion scripts process raw Parquet files in-memory (`io.BytesIO`) before streaming to Object Storage (MinIO/GCS), eliminating local VM disk I/O bottlenecks.
+- **Automated Time-Window Ingestion:** Dynamically calculates monthly target URLs from **January 2025 to the current month**, with graceful fallback handling for unreleased TLC monthly partitions (HTTP 404).
 - **Incremental & Idempotent Execution:**
-  - **Bronze:** Skips already ingested monthly Parquet files.
-  - **Silver:** Uses `silver_processed_files` tracking table to prevent duplicate ingestion.
-- **High-Performance Bulk Loading:** Uses PostgreSQL native `COPY FROM STDIN` protocol via custom Python driver, reducing load time for 10M+ rows from 20 mins to <2 mins.
+  - **Bronze:** Checks object existence in bucket storage before downloading to skip existing raw files.
+  - **Silver:** Tracks processed files using `silver_processed_files` metadata table across both PostgreSQL and BigQuery to guarantee idempotency.
+- **High-Performance Bulk Loading:** Employs PostgreSQL native `COPY FROM STDIN` protocol (`psql_insert_copy`) in local mode, reducing loading times for millions of records from ~20 minutes to <2 minutes.
+- **Cross-Database dbt Abstraction (Jinja SQL):** Uses native Jinja conditionals (`{% if target.name == 'gcp' %}`) within dbt staging and mart models to seamlessly adapt SQL syntax between BigQuery (ANSI SQL, `INT64`, `NUMERIC`) and PostgreSQL (`INT`, `BIGINT`, `::` casting).
 - **Medallion Architecture:**
   - 🟤 **Bronze Layer:** Raw, immutable Parquet files preserved for compliance and reprocessing.
-  - ⚪ **Silver Layer:** Cleaned, deduplicated, and validated data with derived features (e.g., trip duration, fare per mile).
-  - 🟡 **Gold Layer:** Modeled into a **Star Schema** (`fact_monthly_trips`, `dim_locations`, `dim_payment_type`) in `gold` schema optimized for analytical querying.
-- **dbt Data Transformation:** Leverages `dbt Core` for modular SQL transformations, staging views, and star schema analytical data marts.
-- **Cost & Performance Optimization:** BigQuery Gold tables are partitioned by `pickup_month` and clustered by `borough` and `payment_type`.
-- **Dual Visualization:**
-  - **Looker Studio:** Executive & Business Intelligence dashboard.
-  - **Grafana:** Operational monitoring dashboard tracking pipeline throughput and system health.
+  - ⚪ **Silver Layer:** Cleaned, deduplicated, and validated records enriched with derived metrics (e.g., trip duration in minutes).
+  - 🟡 **Gold Layer:** Modeled into a **Star Schema** (`fact_monthly_trips`, `dim_payment_type`) optimized for fast analytical queries.
+- **GCP Security & IAM Hardening:** Configured Service Account credentials (`config/gcp_key.json` with `chmod 644` permissions) and resolved Organization Policy constraints (`iam.disableServiceAccountKeyCreation`).
+- **Dual Dashboard Ecosystem:**
+  - **Grafana (Local):** Real-time operational dashboard monitoring file ingestion logs, row counts, and local revenue aggregates.
+  - **Looker Studio (GCP):** Executive BI dashboard connected directly to BigQuery Gold data marts.
 
 ---
 
@@ -74,12 +75,12 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 
 | Domain | Technology |
 | :--- | :--- |
-| **Orchestration** | Apache Airflow |
-| **Ingestion & Processing** | Python, Pandas, PyArrow, SQLAlchemy |
+| **Orchestration** | Apache Airflow (Docker, LocalExecutor) |
+| **Ingestion & Processing** | Python, Pandas, PyArrow, SQLAlchemy, Boto3, Google Cloud Storage SDK |
 | **Cloud Infrastructure (GCP)** | Compute Engine (VM), Google Cloud Storage (GCS), BigQuery |
-| **Local Infrastructure (Docker)** | MinIO (Object Storage), PostgreSQL, DuckDB, Apache Kafka |
+| **Local Infrastructure (Docker)** | MinIO (S3 Emulation), PostgreSQL (`silver_db`), Grafana |
 | **Data Transformation** | dbt Core (`dbt-bigquery` / `dbt-postgres`) |
-| **Monitoring & BI** | Looker Studio, Grafana |
+| **Monitoring & BI** | Looker Studio (Business BI), Grafana (Operational Monitoring) |
 | **Containerization** | Docker & Docker Compose |
 
 ---
@@ -131,17 +132,34 @@ cd nyc-taxi-medallion-pipeline
 cp .env.example .env
 ```
 
-#### 2. Spin Up Docker Pipeline Infrastructure
+Edit your `.env` file to select the active environment (`LOCAL` vs `GCP`):
+
+```env
+# Set ENVIRONMENT to 'GCP' or 'LOCAL'
+ENVIRONMENT=GCP
+GCP_PROJECT_ID=your-gcp-project-id
+GCS_BUCKET_NAME=nyc-taxi-bronze-your-bucket
+BIGQUERY_DATASET=silver_dataset
+GOOGLE_APPLICATION_CREDENTIALS=/opt/airflow/config/gcp_key.json
+```
+
+#### 2. Configure Service Account Permissions
+Place your GCP Service Account JSON key inside `config/gcp_key.json` and set read permissions:
+```bash
+chmod 644 config/gcp_key.json
+```
+
+#### 3. Spin Up Docker Pipeline Infrastructure
 ```bash
 # Set permissions for Airflow DAGs, Scripts, and dbt project
 chmod -R 777 dags/ scripts/ dbt_project/
 
-# Start all containers
+# Force container recreation to load updated .env configuration
 docker compose down
 docker compose up -d
 ```
 
-#### 3. Execute Medallion Pipeline Tasks
+#### 4. Execute Medallion Pipeline Tasks
 
 ##### Option A: Airflow Web UI
 1. Open Apache Airflow UI at `http://<YOUR-VM-IP>:8080` (Default Credentials: `admin` / `admin`).
@@ -153,7 +171,7 @@ docker compose up -d
 # Step 1: Ingest to Bronze (MinIO / GCS)
 docker exec -it airflow python /opt/airflow/scripts/ingest_to_bronze.py
 
-# Step 2: Cleanse & Fast Bulk Load to Silver (PostgreSQL)
+# Step 2: Cleanse & Fast Bulk Load to Silver (PostgreSQL / BigQuery)
 docker exec -it airflow python /opt/airflow/scripts/transform_to_silver.py
 
 # Step 3: Run Gold Layer Star Schema Transformations (dbt Core)
@@ -196,4 +214,4 @@ The Gold Layer follows a **Star Schema** design:
 
 ## 🛡️ License & Data Privacy
 
-This repository uses publicly available dataset provided by the **NYC Taxi & Limousine Commission (TLC)**. No confidential or proprietary company data is contained in this project.
+This repository uses a publicly available dataset provided by the **NYC Taxi & Limousine Commission (TLC)**. No confidential or proprietary company data is contained in this project.
