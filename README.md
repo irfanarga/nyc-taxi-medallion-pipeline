@@ -35,13 +35,165 @@ This project processes millions of NYC TLC Taxi Trip records, demonstrating both
 │                                                        │  │                                                        │
 │  [SILVER LAYER]                                        │  │  [SILVER LAYER]                                        │
 │  PostgreSQL / BigQuery Staging                         │  │  PostgreSQL Container (`silver_db`)                    │
-│  • Bulk COPY FROM STDIN optimization (10x faster)      │  │  • Data cleansing, filtering, type casting             │
-│  • Metadata tracking (`silver_processed_files`)        │  │  • Incremental metadata tracking                       │
+│  • Deduplication, schema validation, data cleansing    │  │  • Data cleansing, filtering, type casting             │
+│  • Fast bulk COPY FROM STDIN optimization              │  │  • Incremental metadata tracking (`silver_processed`)  │
 │                                                        │  │                                                        │
 │  [GOLD LAYER]                                          │  │  [GOLD LAYER]                                          │
-│  BigQuery Data Mart (dbt Core)                         │  │  PostgreSQL / DuckDB (dbt Core)                        │
-│  • Star Schema (`fact_monthly_trips`, `dim_payment`)   │  │  • Local analytical data mart (`gold` schema)          │
+│  BigQuery Data Mart (dbt Core)                         │  │  DuckDB / PostgreSQL (dbt Core)                        │
+│  • Star Schema (Fact & Dimension Tables)               │  │  • Local analytical data mart (`gold` schema)          │
+│  • Partitioned & Clustered for cost optimization       │  │                                                        │
 │                                                        │  │                                                        │
 │  [PRESENTATION LAYER]                                  │  │  [PRESENTATION LAYER]                                  │
 │  Looker Studio (Business BI)                           │  │  Grafana Dashboard (Operational & Real-time)           │
 └────────────────────────────────────────────────────────┘  └────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ✨ Key Features & Engineering Highlights
+
+- **Decoupled Storage & Compute:** Ingestion scripts process data in-memory (`io.BytesIO`) before pushing to Cloud/Object Storage, eliminating local VM disk bottlenecks.
+- **Automated Time-Window Ingestion:** Dynamically fetches NYC Yellow Taxi data from **January 2025 to the latest available month**, with graceful fallback handling for unreleased monthly partitions (HTTP 404).
+- **Incremental & Idempotent Execution:**
+  - **Bronze:** Skips already ingested monthly Parquet files.
+  - **Silver:** Uses `silver_processed_files` tracking table to prevent duplicate ingestion.
+- **High-Performance Bulk Loading:** Uses PostgreSQL native `COPY FROM STDIN` protocol via custom Python driver, reducing load time for 10M+ rows from 20 mins to <2 mins.
+- **Medallion Architecture:**
+  - 🟤 **Bronze Layer:** Raw, immutable Parquet files preserved for compliance and reprocessing.
+  - ⚪ **Silver Layer:** Cleaned, deduplicated, and validated data with derived features (e.g., trip duration, fare per mile).
+  - 🟡 **Gold Layer:** Modeled into a **Star Schema** (`fact_monthly_trips`, `dim_locations`, `dim_payment_type`) in `gold` schema optimized for analytical querying.
+- **dbt Data Transformation:** Leverages `dbt Core` for modular SQL transformations, staging views, and star schema analytical data marts.
+- **Cost & Performance Optimization:** BigQuery Gold tables are partitioned by `pickup_month` and clustered by `borough` and `payment_type`.
+- **Dual Visualization:**
+  - **Looker Studio:** Executive & Business Intelligence dashboard.
+  - **Grafana:** Operational monitoring dashboard tracking pipeline throughput and system health.
+
+---
+
+## 🛠️ Tech Stack
+
+| Domain | Technology |
+| :--- | :--- |
+| **Orchestration** | Apache Airflow |
+| **Ingestion & Processing** | Python, Pandas, PyArrow, SQLAlchemy |
+| **Cloud Infrastructure (GCP)** | Compute Engine (VM), Google Cloud Storage (GCS), BigQuery |
+| **Local Infrastructure (Docker)** | MinIO (Object Storage), PostgreSQL, DuckDB, Apache Kafka |
+| **Data Transformation** | dbt Core (`dbt-bigquery` / `dbt-postgres`) |
+| **Monitoring & BI** | Looker Studio, Grafana |
+| **Containerization** | Docker & Docker Compose |
+
+---
+
+## 🚀 Quickstart Guide
+
+### ⚙️ Special Setup: Native MinIO Compilation (For VM / GCP Rate-Limit Workarounds)
+
+If running on a cloud VM (GCP/AWS) where Docker Hub registry rate limits or corrupt image pulls occur, compile the official `minio` and `mc` binaries natively using Go toolchain before running Docker Compose:
+
+#### 1. Clean Environment & Install Go Toolchain
+```bash
+# Delete corrupt or existing local bin folder
+rm -rf ./bin
+
+# Download & install Go 1.22
+wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+```
+
+#### 2. Build MinIO & MC Binary from Official GitHub Source
+```bash
+go install github.com/minio/minio@latest
+go install github.com/minio/mc@latest
+```
+
+#### 3. Move Compiled Binaries to Project Directory
+```bash
+mkdir -p ./bin
+cp ~/go/bin/minio ./bin/minio
+cp ~/go/bin/mc ./bin/mc
+chmod +x ./bin/minio ./bin/mc
+```
+
+#### 4. Verify Binary Versions
+```bash
+./bin/minio --version
+```
+
+---
+
+### 🐳 Execution Steps
+
+#### 1. Clone the Repository & Configure Environment
+```bash
+git clone https://github.com/your-username/nyc-taxi-medallion-pipeline.git
+cd nyc-taxi-medallion-pipeline
+cp .env.example .env
+```
+
+#### 2. Spin Up Docker Pipeline Infrastructure
+```bash
+# Set permissions for Airflow DAGs, Scripts, and dbt project
+chmod -R 777 dags/ scripts/ dbt_project/
+
+# Start all containers
+docker compose down
+docker compose up -d
+```
+
+#### 3. Execute Medallion Pipeline Tasks
+
+##### Option A: Airflow Web UI
+1. Open Apache Airflow UI at `http://<YOUR-VM-IP>:8080` (Default Credentials: `admin` / `admin`).
+2. Locate the DAG **`nyc_taxi_medallion_pipeline`**.
+3. Toggle the DAG switch to **ON**, then click **Trigger DAG (▶)**.
+
+##### Option B: Command Line Interface (CLI)
+```bash
+# Step 1: Ingest to Bronze (MinIO / GCS)
+docker exec -it airflow python /opt/airflow/scripts/ingest_to_bronze.py
+
+# Step 2: Cleanse & Fast Bulk Load to Silver (PostgreSQL)
+docker exec -it airflow python /opt/airflow/scripts/transform_to_silver.py
+
+# Step 3: Run Gold Layer Star Schema Transformations (dbt Core)
+docker exec -it airflow python3 -m dbt.cli.main run --project-dir /opt/airflow/dbt_project --profiles-dir /opt/airflow/dbt_project
+```
+
+---
+
+## 📊 Data Mart Model (Gold Layer)
+
+The Gold Layer follows a **Star Schema** design:
+
+```text
+                        ┌────────────────────────┐
+                        │     dim_locations      │
+                        ├────────────────────────┤
+                        │ PK  location_id        │
+                        │     borough            │
+                        │     zone_name          │
+                        └───────────┬────────────┘
+                                    │
+                                    │ 1:N
+                                    ▼
+┌───────────────────────┐    ┌───────────────────────────────────┐
+│   dim_payment_type    │    │         fact_monthly_trips        │
+├───────────────────────┤    ├───────────────────────────────────┤
+│ PK  payment_type_id   │1:N │ FK  pickup_location_id            │
+│     payment_name      ├───►│ FK  dropoff_location_id           │
+└───────────────────────┘    │ FK  payment_type_id               │
+                             │     trip_month                    │
+                             │     total_trips                   │
+                             │     total_passengers              │
+                             │     total_distance_miles          │
+                             │     total_gross_revenue           │
+                             │     avg_tip_percentage            │
+                             └───────────────────────────────────┘
+```
+
+---
+
+## 🛡️ License & Data Privacy
+
+This repository uses publicly available dataset provided by the **NYC Taxi & Limousine Commission (TLC)**. No confidential or proprietary company data is contained in this project.
